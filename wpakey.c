@@ -321,7 +321,9 @@ static void process_tags(const unsigned char* tagdata, size_t tagdata_len)
 		unsigned char *dst = 0;
 		switch(tag[0]) {
 			case 0x30: /* RSN */
-				enc |= ET_WPA2 | process_rsn(tag+2, tag[1], 2);
+				assert(tag[1] > 2);
+				assert(!memcmp(tag+2, "\x01\x00", 2)); /* RSN version 1 */
+				enc |= ET_WPA2 | process_rsn(tag+4, tag[1]-2, 2);
 				break;
 			case 0xDD:
 				if(tag[1] >= 8 && !memcmp(tag+2, "\x00\x50\xF2\x01\x01\x00", 6))
