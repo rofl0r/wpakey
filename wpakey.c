@@ -145,6 +145,93 @@ static void authenticate(const unsigned char dst[6])
 	dprintf(2, "[+] Sending authentication request\n");
 }
 
+static size_t add_encryption_ie(unsigned char *packet)
+{
+	int chosen = 0;
+	size_t offset = 2;
+	unsigned char vendor[3];
+	if((gstate.enctype & ET_WEP) && !((gstate.enctype & ET_WPA) || (gstate.enctype & ET_WPA2))) {
+		dprintf(2, "oops, WEP not implemented\n");
+		abort();
+	}
+	memcpy(packet, "\0\0", 2);
+	if(gstate.enctype & ET_WPA) {
+		packet[0] = 0xDD;
+		memcpy(vendor, "\0\x50\xF2", 3);
+		memcpy(packet + offset, "\x00\x50\xF2\x01\x01\x00", 6);
+		offset += 6;
+		chosen |= ET_WPA;
+	} else if (gstate.enctype & ET_WPA2) {
+		packet[0] = 0x30;
+		memcpy(vendor, "\0\x0f\xac", 3);
+		chosen |= ET_WPA2;
+	}
+	memcpy(packet + offset, vendor, 3);
+	offset += 3;
+	if(gstate.enctype & ET_GRP_CCMP) {
+		packet[offset] = 4;
+		chosen |= ET_GRP_CCMP;
+	} else if(gstate.enctype & ET_GRP_TKIP) {
+		packet[offset] = 2;
+		chosen |= ET_GRP_TKIP;
+	} else if(gstate.enctype & ET_GRP_WEP104) {
+		packet[offset] = 5;
+		chosen |= ET_GRP_WEP104;
+	} else if(gstate.enctype & ET_GRP_WEP40) {
+		packet[offset] = 1;
+		chosen |= ET_GRP_WEP40;
+	} else {
+		dprintf(2, "err: unknown group key cipher");
+		abort();
+	}
+	offset += 1;
+	memcpy(packet+offset, "\x01\x00", 2);
+	offset += 2;
+	memcpy(packet + offset, vendor, 3);
+	offset += 3;
+	if(gstate.enctype & ET_PAIR_CCMP) {
+		packet[offset] = 4;
+		chosen |= ET_PAIR_CCMP;
+	} else if(gstate.enctype & ET_PAIR_TKIP) {
+		packet[offset] = 2;
+		chosen |= ET_PAIR_TKIP;
+	} else if(gstate.enctype & ET_PAIR_WEP104) {
+		packet[offset] = 5;
+		chosen |= ET_PAIR_WEP104;
+	} else if(gstate.enctype & ET_PAIR_WEP40) {
+		packet[offset] = 1;
+		chosen |= ET_PAIR_WEP40;
+	} else {
+		dprintf(2, "err: unknown group key cipher");
+		abort();
+	}
+	offset +=1;
+	memcpy(packet+offset, "\x01\x00", 2);
+	offset += 2;
+	memcpy(packet + offset, vendor, 3);
+	offset += 3;
+	if(gstate.enctype & ET_AKM_PSK) {
+		packet[offset] = 2;
+		chosen |= ET_AKM_PSK;
+	} else if(gstate.enctype & ET_AKM_8021X) {
+		packet[offset] = 1;
+		chosen |= ET_AKM_8021X;
+		goto notsupp;
+	} else if(gstate.enctype & ET_AKM_8021XFT) {
+		packet[offset] = 3;
+		chosen |= ET_AKM_8021XFT;
+		goto notsupp;
+	} else {
+	notsupp:
+		dprintf(2, "err: unsupported auth key method");
+		abort();
+	}
+	offset +=1;
+	packet[1] = offset - 2;
+	gstate.enctype = chosen;
+	return offset;
+}
+
 /* Associate with the AP */
 static void associate(const unsigned char dst[6], const char *essid)
 {
@@ -180,6 +267,8 @@ static void associate(const unsigned char dst[6], const char *essid)
 		memcpy(packet+offset, gstate.htcaps, gstate.len_htcaps);
 		offset += gstate.len_htcaps;
 	}
+
+	offset += add_encryption_ie(packet + offset);
 
 	/* omit wps tag for now */
 	send_packet(packet, offset, 1);
