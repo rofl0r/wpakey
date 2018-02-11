@@ -8,6 +8,24 @@
 #include "endianness.h"
 #include "radiotap_flags.h"
 
+enum enctype {
+	ET_NONE        = 0,
+	ET_WEP         = 1 << 0,
+	ET_WPA         = 1 << 1,
+	ET_WPA2        = 1 << 2,
+	ET_GRP_CCMP    = 1 << 3,
+	ET_GRP_TKIP    = 1 << 4,
+	ET_GRP_WEP40   = 1 << 5,
+	ET_GRP_WEP104  = 1 << 6,
+	ET_PAIR_CCMP   = 1 << 7,
+	ET_PAIR_TKIP   = 1 << 8,
+	ET_PAIR_WEP40  = 1 << 9,
+	ET_PAIR_WEP104 = 1 << 10,
+	ET_AKM_8021X   = 1 << 11,
+	ET_AKM_PSK     = 1 << 12,
+	ET_AKM_8021XFT = 1 << 13,
+};
+
 struct global {
 	pcap_t *cap;
 	unsigned char our_mac[6];
@@ -21,6 +39,7 @@ struct global {
 	unsigned char len_erates;
 	unsigned char len_htcaps;
 	uint16_t caps;
+	uint16_t enctype;
 };
 
 static struct global gstate;
@@ -219,6 +238,69 @@ static void fix_rates(unsigned char *buf, size_t len) {
                 buf[i] = buf[i] & 0x7f; // remove (B) bit
 }
 
+static int check_rsn_cipher(const unsigned char rsn[4], int wpa, int group)
+{
+	static const unsigned short group_ciphers[] = {
+		[1] = ET_GRP_WEP40,
+		[2] = ET_GRP_TKIP,
+		[4] = ET_GRP_CCMP,
+		[5] = ET_GRP_WEP104,
+	};
+	static const unsigned short pair_ciphers[] = {
+		[1] = ET_PAIR_WEP40,
+		[2] = ET_PAIR_TKIP,
+		[4] = ET_PAIR_CCMP,
+		[5] = ET_PAIR_WEP104,
+	};
+	const unsigned short *cipher_tbl = group ? group_ciphers : pair_ciphers;
+	if(wpa == 2)
+		assert(!memcmp(rsn, "\0\x0f\xac", 3));
+	else if(wpa == 1)
+		assert(!memcmp(rsn, "\0\x50\xf2", 3));
+
+	assert(rsn[3] < 6);
+	return cipher_tbl[rsn[3]];
+}
+
+static int check_rsn_authkey(const unsigned char rsn[4], int wpa)
+{
+	static const unsigned short auth_key_mgmt[] = {
+		[1] = ET_AKM_8021X,
+		[2] = ET_AKM_PSK,
+		[3] = ET_AKM_8021XFT,
+	};
+	if(wpa == 2)
+		assert(!memcmp(rsn, "\0\x0f\xac", 3));
+	else if(wpa == 1)
+		assert(!memcmp(rsn, "\0\x50\xf2", 3));
+	assert(rsn[3] < 4);
+	return auth_key_mgmt[rsn[3]];
+}
+static int process_rsn(const unsigned char *rsn, int len, int wpa) {
+	int enc = 0;
+	int pos = 0;
+	unsigned i, num_ciphers;
+	if(pos + 4 <= len) {
+		enc |= check_rsn_cipher(rsn+pos, wpa, 1);
+	}
+	pos += 4;
+	if(pos + 2 <= len) {
+		num_ciphers = rsn[pos];
+		pos += 2;
+		for(i=0; i < num_ciphers && (pos + 4 <= len); i++, pos += 4) {
+			enc |= check_rsn_cipher(rsn+pos, wpa, 0);
+		}
+	}
+	if(pos + 2 <= len) {
+		num_ciphers = rsn[pos];
+		pos += 2;
+		for(i=0; i < num_ciphers && (pos + 4 <= len); i++, pos += 4) {
+			enc |= check_rsn_authkey(rsn+pos, 0);
+		}
+	}
+	return enc;
+}
+
 static int get_next_ie(const unsigned char *data, size_t len, size_t *currpos) {
 	if(*currpos + 2 >= len) return 0;
 	*currpos = *currpos + 2 + data[*currpos + 1];
@@ -230,12 +312,21 @@ static void process_tags(const unsigned char* tagdata, size_t tagdata_len)
 {
 	unsigned const char *tag;
 	size_t ie_iterator = 0, remain;
+	int enc = 0;
 	do {
 		tag = tagdata + ie_iterator;
 		remain = tagdata_len - ie_iterator;
+		if(tag[1] > remain) break;
 		unsigned char *dlen = 0;
 		unsigned char *dst = 0;
 		switch(tag[0]) {
+			case 0x30: /* RSN */
+				enc |= ET_WPA2 | process_rsn(tag+2, tag[1]-2, 2);
+				break;
+			case 0xDD:
+				if(tag[1] >= 8 && !memcmp(tag+2, "\x00\x50\xF2\x01\x01\x00", 6))
+					enc |= ET_WPA | process_rsn(tag+8, tag[1]-8, 1);
+				break;
 			case 0x01: /* rates */
 				dlen = &gstate.len_rates;
 				dst = gstate.rates;
@@ -259,6 +350,7 @@ static void process_tags(const unsigned char* tagdata, size_t tagdata_len)
 
 		}
 	} while(get_next_ie(tagdata, tagdata_len, &ie_iterator));
+	gstate.enctype = enc;
 }
 
 /* return -1 on failure,
@@ -311,6 +403,9 @@ static int process_packet(pcap_t *cap)
 				offset += 2;
 				process_tags(data + offset, h.len - offset);
 				fix_rates(gstate.rates, gstate.len_rates);
+
+				if(caps & 0x10 /* CAPABILITY_WEP */)
+					gstate.enctype |= ET_WEP;
 
 				return 1;
 			case 0x00b0: /* authentication */
