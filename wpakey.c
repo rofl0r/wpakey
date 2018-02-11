@@ -316,16 +316,16 @@ static void process_tags(const unsigned char* tagdata, size_t tagdata_len)
 	do {
 		tag = tagdata + ie_iterator;
 		remain = tagdata_len - ie_iterator;
-		if(tag[1] > remain) break;
+		if(remain < 2 || tag[1]+2 > remain) break;
 		unsigned char *dlen = 0;
 		unsigned char *dst = 0;
 		switch(tag[0]) {
 			case 0x30: /* RSN */
-				enc |= ET_WPA2 | process_rsn(tag+2, tag[1]-2, 2);
+				enc |= ET_WPA2 | process_rsn(tag+2, tag[1], 2);
 				break;
 			case 0xDD:
 				if(tag[1] >= 8 && !memcmp(tag+2, "\x00\x50\xF2\x01\x01\x00", 6))
-					enc |= ET_WPA | process_rsn(tag+8, tag[1]-8, 1);
+					enc |= ET_WPA | process_rsn(tag+8, tag[1]-6, 1);
 				break;
 			case 0x01: /* rates */
 				dlen = &gstate.len_rates;
