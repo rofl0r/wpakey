@@ -660,6 +660,8 @@ int main(int argc, char** argv)
 	strcpy(gstate.essid, essid);
 	str2mac(bssid, gstate.bssid);
 
+	sigalrm_init();
+
 	gstate.conn_state = ST_CLEAN;
 
 	int exit_state = 1;
