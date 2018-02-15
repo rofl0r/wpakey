@@ -33,6 +33,7 @@ struct global {
 	unsigned char bssid[6];
 	char essid[32+1];
 	char conn_state;
+	char pass[64];
 	unsigned char rates[64];
 	unsigned char erates[64];
 	unsigned char htcaps[64];
@@ -640,7 +641,7 @@ int main(int argc, char** argv)
 {
 	int c;
 	const char *essid = 0, *bssid = 0, *itf = 0;
-	while((c = getopt(argc, argv, "b:e:i:")) != -1) {
+	while((c = getopt(argc, argv, "b:e:i:p:")) != -1) {
 		switch(c) {
 			case 'i':
 				itf = optarg;
@@ -650,6 +651,9 @@ int main(int argc, char** argv)
 				break;
 			case 'e':
 				essid = optarg;
+				break;
+			case 'p':
+				strcpy(gstate.pass, optarg);
 				break;
 			default:
 				return usage(argv[0]);
