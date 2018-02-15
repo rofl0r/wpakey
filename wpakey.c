@@ -305,10 +305,12 @@ static void associate(const unsigned char dst[6], const char *essid)
 	memcpy(packet+offset, gstate.rates, gstate.len_rates);
 	offset += gstate.len_rates;
 
-	packet[offset++] = 0x32; /* ERATES TAG NR */
-	packet[offset++] = gstate.len_erates;
-	memcpy(packet+offset, gstate.erates, gstate.len_erates);
-	offset += gstate.len_erates;
+	if(gstate.len_erates) {
+		packet[offset++] = 0x32; /* ERATES TAG NR */
+		packet[offset++] = gstate.len_erates;
+		memcpy(packet+offset, gstate.erates, gstate.len_erates);
+		offset += gstate.len_erates;
+	}
 
 	if(gstate.len_htcaps && !NO_REPLAY_HTCAPS) {
 		packet[offset++] = 0x2d; /* HT CAPS NR */
