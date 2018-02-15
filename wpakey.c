@@ -165,6 +165,8 @@ static size_t add_encryption_ie(unsigned char *packet)
 		packet[0] = 0x30;
 		memcpy(vendor, "\0\x0f\xac", 3);
 		chosen |= ET_WPA2;
+		memcpy(packet+offset, "\x01\0", 2); /* RSN VERSION 1*/
+		offset += 2;
 	}
 	memcpy(packet + offset, vendor, 3);
 	offset += 3;
@@ -227,6 +229,10 @@ static size_t add_encryption_ie(unsigned char *packet)
 		abort();
 	}
 	offset +=1;
+	if (gstate.enctype & ET_WPA2) {
+		memcpy(packet + offset, gstate.rsn_caps, 2); /* RSN capabilities */
+		offset += 2;
+	}
 	packet[1] = offset - 2;
 	gstate.enctype = chosen;
 	return offset;
