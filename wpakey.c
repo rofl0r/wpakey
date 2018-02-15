@@ -990,15 +990,13 @@ fresh_try:
 			}
 		}
 		if(timeout_hit) {
-			if(gstate.conn_state > ST_GOT_BEACON) {
-				if(gstate.conn_state == ST_GOT_M1 && gstate.m1_count > 1) {
-					dprintf(2, "[X] no M3 received, assuming password %s is wrong\n", gstate.pass);
-					if(!fetch_next_pass())
-						break;
-				}
-				gstate.conn_state = ST_CLEAN;
-				advance_state();
+			if(gstate.conn_state == ST_GOT_M1 && gstate.m1_count > 1) {
+				dprintf(2, "[X] no M3 received, assuming password %s is wrong\n", gstate.pass);
+				if(!fetch_next_pass())
+					break;
 			}
+			gstate.conn_state = ST_CLEAN;
+			advance_state();
 			goto fresh_try;
 		}
 	}
