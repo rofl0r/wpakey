@@ -902,7 +902,6 @@ static void advance_state()
 			break;
 		case ST_GOT_AUTH:
 			gstate.conn_state = ST_GOT_ASSOC;
-			dprintf(2, "YEAH!\n");
 			break;
 		case ST_GOT_ASSOC:
 			gstate.conn_state = ST_GOT_M1;
