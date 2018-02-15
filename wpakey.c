@@ -48,7 +48,8 @@ struct global {
 	unsigned char bssid[6];
 	char essid[32+1];
 	char conn_state;
-	char pass[64];
+	char pass[64+1];
+	uint8_t m1_count;
 	unsigned char rates[64];
 	unsigned char erates[64];
 	unsigned char htcaps[64];
@@ -650,15 +651,17 @@ static void send_m2(void)
 	send_packet(packet, offset, 1);
 }
 
+#define M1_MASK_BITS (KI_PAIRWISE|KI_ACK)
+#define M3_MASK_BITS (KI_INSTALL|KI_MIC|KI_SECURE)
 static int is_m1(struct eapolkey* eap)
 {
 	unsigned ki = end_be16toh(eap->keyinfo);
-	return (ki & (KI_PAIRWISE|KI_ACK)) && !(ki & (KI_INSTALL|KI_MIC|KI_SECURE));
+	return ((ki & (M1_MASK_BITS)) == M1_MASK_BITS) && !(ki & (M3_MASK_BITS));
 }
 static int is_m3(struct eapolkey* eap)
 {
 	unsigned ki = end_be16toh(eap->keyinfo);
-	return (ki & (KI_PAIRWISE|KI_ACK|KI_INSTALL|KI_MIC|KI_SECURE));
+	return ((ki & (M1_MASK_BITS|M3_MASK_BITS)) == (M1_MASK_BITS|M3_MASK_BITS));
 }
 static int process_eapol_packet(int version, struct eapolkey* eap)
 {
@@ -675,8 +678,14 @@ static int process_eapol_packet(int version, struct eapolkey* eap)
 		gstate.eap_mic_cipher = end_be16toh(eap->keyinfo) & KI_TYPEMASK;
 		memcpy(gstate.anonce, eap->nonce, sizeof(gstate.anonce));
 		memcpy(gstate.replay, eap->replay, sizeof(gstate.replay));
+		gstate.m1_count = 0;
 		return 1;
+	} else if(gstate.conn_state == ST_GOT_M1 && is_m3(eap) ) {
+		return 1;
+	} else if (gstate.conn_state == ST_GOT_M1 && is_m1(eap)) {
+		gstate.m1_count++;
 	}
+
 	return 0;
 }
 
@@ -861,6 +870,7 @@ static int usage(const char* argv0)
 	dprintf(2, "usage: %s -i wlan0 -e essid -b bssid\n"
 		   "reads password candidates from stdin and tries to connect\n"
 		   "the wifi apapter needs to be on the right channel already\n"
+		   "password candidates with length > 64 and < 8 will be ignored\n"
 		   , argv0 );
 	return 1;
 }
@@ -892,11 +902,23 @@ static void advance_state()
 	}
 }
 
+static int fetch_next_pass()
+{
+	char buf[1024];
+	fetch:
+	if(!fgets(buf, sizeof buf, stdin)) return 0;
+	size_t l = strlen(buf);
+	if(l < 9 || l > 65) goto fetch;
+	buf[l-1] = 0; // remove \n
+	strcpy(gstate.pass, buf);
+	return 1;
+}
+
 int main(int argc, char** argv)
 {
 	int c;
 	const char *essid = 0, *bssid = 0, *itf = 0;
-	while((c = getopt(argc, argv, "b:e:i:p:")) != -1) {
+	while((c = getopt(argc, argv, "b:e:i:")) != -1) {
 		switch(c) {
 			case 'i':
 				itf = optarg;
@@ -906,9 +928,6 @@ int main(int argc, char** argv)
 				break;
 			case 'e':
 				essid = optarg;
-				break;
-			case 'p':
-				strcpy(gstate.pass, optarg);
 				break;
 			default:
 				return usage(argv[0]);
@@ -922,11 +941,11 @@ int main(int argc, char** argv)
 	strcpy(gstate.essid, essid);
 	str2mac(bssid, gstate.bssid);
 
+	if(!fetch_next_pass()) return usage(argv[0]);
+
 	sigalrm_init();
 
 	gstate.conn_state = ST_CLEAN;
-
-	int exit_state = 1;
 
 fresh_try:
 
@@ -936,15 +955,24 @@ fresh_try:
 		if(ret == 1) {
 			stop_timer();
 			advance_state();
+			if(gstate.conn_state == ST_GOT_M3) {
+				dprintf(1, "[!] found correct password: %s\n", gstate.pass);
+				return 0;
+			}
 		}
 		if(timeout_hit) {
 			if(gstate.conn_state > ST_GOT_BEACON) {
-				gstate.conn_state = ST_GOT_BEACON;
+				if(gstate.conn_state == ST_GOT_M1 && gstate.m1_count > 1) {
+					dprintf(2, "[X] no M3 received, assuming password %s is wrong\n", gstate.pass);
+					if(!fetch_next_pass())
+						break;
+				}
+				gstate.conn_state = ST_CLEAN;
 				advance_state();
 			}
 			goto fresh_try;
 		}
 	}
 
-	return exit_state;
+	return 1;
 }
