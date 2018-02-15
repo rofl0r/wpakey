@@ -906,11 +906,26 @@ static int show_enc(void)
 	return 1;
 }
 
+static void fail(const char *s)
+{
+	dprintf(2, "[X] %s\n", s);
+	exit(1);
+}
+
+static void check_supported_enc(void)
+{
+	if(!((gstate.enctype & ET_WPA) || (gstate.enctype & ET_WPA2)))
+		fail("sorry, only WPA1/WPA2 supported at this time");
+	if(!(gstate.enctype & ET_PAIR_CCMP))
+		fail("sorry, only AES/CCMP supported at this time");
+}
+
 static void advance_state()
 {
 	static int enc_shown = 0;
 	switch(gstate.conn_state) {
 		case ST_CLEAN:
+			check_supported_enc();
 			if(!enc_shown) enc_shown = show_enc();
 			gstate.conn_state = ST_GOT_BEACON;
 			deauthenticate(gstate.bssid);
