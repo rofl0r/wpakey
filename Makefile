@@ -14,4 +14,4 @@ all: wpakey
 wpakey: $(CR_OBJS)
 
 clean:
-	rm -f wpakey
+	rm -f wpakey *.o $(CR_OBJS)
