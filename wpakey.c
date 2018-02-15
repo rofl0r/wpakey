@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
+#include <signal.h>
 #include <pcap.h>
 #include "endianness.h"
 #include "radiotap_flags.h"
@@ -45,8 +46,50 @@ struct global {
 static struct global gstate;
 
 /* packet send stuff START */
+#define TIMEOUT_SECS 2
+#define RESEND_TIMEOUT_USECS (1000000LL/5LL)
+static unsigned timeout_ticks;
+static unsigned long long timeout_usec;
 
-#define start_timer()
+static int timeout_hit;
+
+static void rewind_timer() {
+	struct itimerval timer = {0};
+	timer.it_value.tv_usec = RESEND_TIMEOUT_USECS;
+	timeout_hit = 0;
+	setitimer(ITIMER_REAL, &timer, 0);
+}
+static void start_timer()
+{
+	timeout_ticks = 0;
+	timeout_usec =  TIMEOUT_SECS * 1000000LL;
+	rewind_timer();
+}
+static void stop_timer()
+{
+	timeout_hit = 0;
+	struct itimerval timer = {0};
+        setitimer(ITIMER_REAL, &timer, 0);
+}
+static int resend_last_packet(void);
+static void alarm_handler(int dummy)
+{
+	(void) dummy;
+        timeout_ticks++;
+
+        if(timeout_ticks * RESEND_TIMEOUT_USECS > timeout_usec) {
+		timeout_hit = 1;
+                dprintf(2, "[!] WARNING: Receive timeout occurred\n");
+        } else {
+                resend_last_packet();
+                rewind_timer();
+        }
+}
+static void sigalrm_init()
+{
+	struct sigaction act = {.sa_handler = alarm_handler};
+	sigaction (SIGALRM, &act, 0);
+}
 
 /* store last packet */
 static size_t last_len;
