@@ -27,6 +27,21 @@ enum enctype {
 	ET_AKM_8021XFT = 1 << 13,
 };
 
+#define KI_TYPEMASK 0x0007
+#define KI_MD5    1
+#define KI_SHA    2
+#define KI_AES    3
+
+#define KI_PAIRWISE   (1<<3)
+#define KI_INSTALL    (1<<6)
+#define KI_ACK        (1<<7)
+#define KI_MIC        (1<<8)
+#define KI_SECURE     (1<<9)
+#define KI_ERROR     (1<<10)
+#define KI_REQUEST   (1<<11)
+#define KI_ENCRYPTED (1<<12)
+#define KI_SMK       (1<<13)
+
 struct global {
 	pcap_t *cap;
 	unsigned char our_mac[6];
@@ -42,6 +57,17 @@ struct global {
 	unsigned char len_htcaps;
 	uint16_t caps;
 	uint16_t enctype;
+	uint8_t eap_version;
+	uint8_t eap_key_type;
+	uint8_t eap_mic_cipher;
+	unsigned char anonce[32];
+	unsigned char snonce[32];
+	unsigned char psk[32];
+	unsigned char replay[8];
+	unsigned char kck[16]; /* key check key, for computing MICs */
+	unsigned char kek[16]; /* key encryption key, for AES unwrapping */
+	unsigned char ptk[16]; /* pairwise key (just TK in 802.11 terms) */
+	unsigned char rsn_caps[2];
 };
 
 static struct global gstate;
@@ -153,7 +179,37 @@ struct assoc_req {
 	uint16_t listen_interval;
 };
 
-static void init_header(unsigned char* packet, uint16_t fc, const unsigned char dst[6])
+struct llc_header
+{
+	uint8_t dsap;
+	uint8_t ssap;
+	uint8_t control_field;
+	unsigned char org_code[3];
+	uint16_t type; /* big endian */
+};
+
+struct dot1X_header
+{
+	uint8_t version;
+	uint8_t type;
+	uint16_t len;
+};
+
+struct eapolkey {
+	uint8_t type;
+	uint16_t keyinfo;
+	uint16_t keylen;
+	uint8_t replay[8];
+	uint8_t nonce[32];
+	uint8_t iv[16];
+	uint8_t rsc[8];
+	uint8_t _reserved[8];
+	uint8_t mic[16];
+	uint16_t paylen;
+	char payload[];
+} __attribute__((packed));
+
+static size_t init_header(unsigned char* packet, uint16_t fc, const unsigned char dst[6])
 {
 	static uint16_t seq = 0;
 	unsigned char *p;
@@ -166,6 +222,14 @@ static void init_header(unsigned char* packet, uint16_t fc, const unsigned char 
 	memcpy(w->dot11.receiver, dst, 6);
 	memcpy(w->dot11.source, gstate.our_mac, 6);
 	memcpy(w->dot11.bssid, dst, 6);
+	return sizeof(struct wifi_header);
+}
+
+static size_t init_llc(unsigned char* packet, uint16_t type)
+{
+	memcpy(packet, "\xaa" "\xaa" "\x03" "\0\0\0", 6);
+	((struct llc_header*)packet)->type = end_htobe16(type);
+	return sizeof(struct llc_header);
 }
 
 #define NO_REPLAY_HTCAPS 0
@@ -371,6 +435,8 @@ enum state {
 	ST_GOT_BEACON,
 	ST_GOT_AUTH,
 	ST_GOT_ASSOC,
+	ST_GOT_M1,
+	ST_GOT_M3,
 };
 
 static void fix_rates(unsigned char *buf, size_t len) {
@@ -439,6 +505,11 @@ static int process_rsn(const unsigned char *rsn, int len, int wpa) {
 			enc |= check_rsn_authkey(rsn+pos, 0);
 		}
 	}
+	if(pos + 2 <= len) {
+		memcpy(gstate.rsn_caps, rsn + pos, 2);
+	} else {
+		memcpy(gstate.rsn_caps, "\0\0", 2);
+	}
 	return enc;
 }
 
@@ -497,6 +568,128 @@ static void process_tags(const unsigned char* tagdata, size_t tagdata_len)
 	gstate.enctype = enc;
 }
 
+#include "wsupp_crypto.h"
+static void pmk_to_ptk()
+{
+	uint8_t *mac1, *mac2;
+	uint8_t *nonce1, *nonce2;
+
+	if(memcmp(gstate.our_mac, gstate.bssid, 6) < 0) {
+		mac1 = gstate.our_mac;
+		mac2 = gstate.bssid;
+	} else {
+		mac1 = gstate.bssid;
+		mac2 = gstate.our_mac;
+	}
+
+	if(memcmp(gstate.snonce, gstate.anonce, 32) < 0) {
+		nonce1 = gstate.snonce;
+		nonce2 = gstate.anonce;
+	} else {
+		nonce1 = gstate.anonce;
+		nonce2 = gstate.snonce;
+	}
+
+	uint8_t key[60];
+
+	const char* astr = "Pairwise key expansion";
+	PRF480(key, gstate.psk, astr, mac1, mac2, nonce1, nonce2);
+
+	memcpy(gstate.kck, key +  0, 16);
+	memcpy(gstate.kek, key + 16, 16);
+	memcpy(gstate.ptk, key + 32, 16);
+
+	memset(key, 0, sizeof(key)); /* YESSSS... dont leave clues1!!!*/
+}
+
+#include "crypto/pbkdf2.h"
+
+static void gen_psk(const char* essid, const char* pass, unsigned char psk[32])
+{
+	memset(psk, 0, 32);
+	pbkdf2_sha1(psk, 32 /*sizeof(psk)*/, pass, strlen(pass), essid, strlen(essid), 4096);
+}
+
+static void fill_rand(unsigned char* buf, size_t len)
+{
+	memset(buf, 0x55, len); // realtek prng :-DDDDDD
+}
+
+static void send_m2(void)
+{
+	fill_rand(gstate.snonce, sizeof(gstate.snonce));
+	gen_psk(gstate.essid, gstate.pass, gstate.psk);
+	pmk_to_ptk();
+	unsigned char packet[256];
+	size_t offset;
+	offset = init_header(packet, 0x0108, gstate.bssid);
+	offset += init_llc(packet+offset, 0x888e /* 802.1X auth*/);
+
+	struct dot1X_header* d1x = (void*)(packet+offset);
+	d1x->version = 1;
+	d1x->type = 3;
+	offset += sizeof(struct dot1X_header);
+	struct eapolkey *eap = (void*)(packet+offset);
+	eap->type = gstate.eap_key_type;
+	eap->keyinfo = end_htobe16(KI_MIC | KI_PAIRWISE | gstate.eap_mic_cipher);
+	eap->keylen =  0; //end_htobe16(16); //0;
+	memcpy(eap->replay, gstate.replay, 8);
+	memcpy(eap->nonce, gstate.snonce, sizeof(gstate.snonce));
+	memset(eap->iv, 0, sizeof(eap->iv));
+	memset(eap->rsc, 0, sizeof(eap->rsc));
+	memset(eap->_reserved, 0, sizeof(eap->_reserved));
+	memset(eap->mic, 0, sizeof(eap->mic));
+
+	offset += sizeof(struct eapolkey);
+	unsigned ielen = add_encryption_ie(packet+offset);
+	offset += ielen;
+	eap->paylen = end_htobe16(ielen);
+	d1x->len = end_htobe16(sizeof(struct eapolkey) + ielen);
+
+	make_mic(eap->mic, gstate.kck, (void*) d1x, sizeof (struct dot1X_header) + sizeof(struct eapolkey) + ielen);
+	send_packet(packet, offset, 1);
+}
+
+static int is_m1(struct eapolkey* eap)
+{
+	unsigned ki = end_be16toh(eap->keyinfo);
+	return (ki & (KI_PAIRWISE|KI_ACK)) && !(ki & (KI_INSTALL|KI_MIC|KI_SECURE));
+}
+static int is_m3(struct eapolkey* eap)
+{
+	unsigned ki = end_be16toh(eap->keyinfo);
+	return (ki & (KI_PAIRWISE|KI_ACK|KI_INSTALL|KI_MIC|KI_SECURE));
+}
+static int process_eapol_packet(int version, struct eapolkey* eap)
+{
+	if(!(
+		(eap->type == 2 /*EAPOL_KEY_RSN*/) ||
+		(eap->type == 254 /*EAPOL_KEY_WPA */) )
+	) {
+		dprintf(2, "invalid eapol type\n");
+		return -1;
+	}
+	gstate.eap_key_type = eap->type;
+	if (gstate.conn_state == ST_GOT_ASSOC && is_m1(eap) ) {
+		gstate.eap_version = version;
+		gstate.eap_mic_cipher = end_be16toh(eap->keyinfo) & KI_TYPEMASK;
+		memcpy(gstate.anonce, eap->nonce, sizeof(gstate.anonce));
+		memcpy(gstate.replay, eap->replay, sizeof(gstate.replay));
+		return 1;
+	}
+	return 0;
+}
+
+static int is_data_packet(int framectl)
+{
+	uint16_t type = framectl & end_htole16(0xfc); /* IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE */
+	/*	0x08 = IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA
+		0x88 = IEEE80211_FTYPE_DATA | IEEE80211_STYPE_QOS_DATA */
+	if(type == end_htole16(0x08)) return 1;
+	if(type == end_htole16(0x88)) return 2;
+	return 0; /* not a data packet */
+}
+
 /* return -1 on failure,
    0 if packet is to ignore,
    1 if state machine can be advanced */
@@ -515,73 +708,108 @@ static int process_packet(pcap_t *cap)
 	struct dot11frame* dot11;
 
 	offset = rh->it_len;
+
+	if(h.len < offset + sizeof(struct dot11frame))
+		return 0;
+
 	memcpy(&framectl, data+offset, 2);
 	framectl = end_le16toh(framectl);
 
-	switch(framectl) {
-			/* IEEE 802.11 packet type */
-			case 0x0080: /* beacon */
+	dot11 = (void*)(data+offset);
 
-				/* TODO : retrieve essid from tagged data */
+	/* ignore all packets not from target bssid */
+	/* packet from target AP ? */
+	//if(memcmp(gstate.bssid, dot11->source, 6))
+	//	return 0;
+	/* our ap ?*/
+	if(memcmp(gstate.bssid, dot11->bssid, 6))
+		return 0;
 
-				if(gstate.conn_state >= ST_GOT_BEACON)
-					return 0;
+	if(gstate.conn_state < ST_GOT_BEACON && framectl == 0x0080 /* beacon */)
+	{
+		/* TODO : retrieve essid from tagged data */
 
-				dot11 = (void*)(data+offset);
-				/* beacon from target AP ? */
-				if(memcmp(gstate.bssid, dot11->source, 6))
-					return 0;
-				/* check if we already have enuff */
-				if(gstate.len_rates && gstate.len_htcaps)
-					return 0;
-				offset +=
-					sizeof (struct dot11frame) /* now at timestamp */+
-					8 /* now at beacon interval */ +
-					2 /* now at caps */;
+		/* check if we already have enuff */
+		if(gstate.len_rates && gstate.len_htcaps)
+			return 0;
 
-				assert(offset +2 <= h.len);
+		offset +=
+			sizeof (struct dot11frame) /* now at timestamp */+
+			8 /* now at beacon interval */ +
+			2 /* now at caps */;
 
-				memcpy(&caps, data+offset, 2);
-				gstate.caps = end_le16toh(caps);
+		assert(offset +2 <= h.len);
 
-				offset += 2;
-				process_tags(data + offset, h.len - offset);
-				fix_rates(gstate.rates, gstate.len_rates);
+		memcpy(&caps, data+offset, 2);
+		gstate.caps = end_le16toh(caps);
 
-				if(caps & 0x10 /* CAPABILITY_WEP */)
-					gstate.enctype |= ET_WEP;
+		offset += 2;
+		process_tags(data + offset, h.len - offset);
+		fix_rates(gstate.rates, gstate.len_rates);
 
-				return 1;
-			case 0x00b0: /* authentication */
-				if(gstate.conn_state >= ST_GOT_AUTH)
-					return 0;
-				/* fall through */
-			case 0x0010: /* association resp */
-				if(gstate.conn_state >= ST_GOT_ASSOC)
-					return 0;
+		if(caps & 0x10 /* CAPABILITY_WEP */)
+			gstate.enctype |= ET_WEP;
 
-				dot11 = (void*)(data+offset);
-				/* our ap ?*/
-				if(memcmp(gstate.bssid, dot11->bssid, 6))
-					return 0;
-				/* for us ? */
-				if(memcmp(gstate.our_mac, dot11->receiver, 6))
-					return 0;
-
-				offset += sizeof(struct dot11frame) + 2;
-				/* auth frame has 3 short members, of which the 3rd is the status */
-				/* assoc frame has 3 short members, of which the 2nd is the status */
-				if(framectl == 0x00b0) offset += 2;
-				assert(offset + 2 <= h.len);
-				/* both assoc and auth success is 0x0000 */
-				if(memcmp("\0\0", data+offset, 2)) {
-					dprintf(2, "[X] assoc or auth error\n");
-					return -1;
-				}
-				return 1;
+		return 1;
 	}
 
-	return 0;
+	/* ignore any other packets not targeted at us */
+	if(memcmp(gstate.our_mac, dot11->receiver, 6))
+		return 0;
+
+	switch(framectl) {
+		/* IEEE 802.11 packet type */
+		case 0x00b0: /* authentication */
+			if(gstate.conn_state >= ST_GOT_AUTH)
+				return 0;
+			/* fall through */
+		case 0x0010: /* association resp */
+			if(gstate.conn_state >= ST_GOT_ASSOC)
+				return 0;
+
+			offset += sizeof(struct dot11frame) + 2;
+			/* auth frame has 3 short members, of which the 3rd is the status */
+			/* assoc frame has 3 short members, of which the 2nd is the status */
+			if(framectl == 0x00b0) offset += 2;
+			assert(offset + 2 <= h.len);
+
+			/* both assoc and auth success is 0x0000 */
+			if(memcmp("\0\0", data+offset, 2)) {
+				dprintf(2, "[X] assoc or auth error\n");
+				return -1;
+			}
+			return 1;
+	}
+
+	if(gstate.conn_state < ST_GOT_ASSOC)
+		return 0;
+
+	int data_type = is_data_packet(framectl);
+	if(!data_type) return 0;
+
+	/* QOS packets have an additional 2 bytes after the .11 header */
+	offset += sizeof(struct dot11frame)+"\0\0\2"[data_type];
+
+	if(h.len < offset +
+		sizeof(struct llc_header) +
+		sizeof(struct dot1X_header) +
+		sizeof(struct eapolkey))
+		return 0;
+
+	struct llc_header *llc = (void*) data + offset;
+	if(llc->type != end_htobe16(0x888E /*DOT1X_AUTHENTICATION*/))
+		return 0;
+	offset += sizeof(struct llc_header);
+
+	struct dot1X_header *d1x = (void*) data + offset;
+	if(d1x->type != 3 /* key */)
+		return 0;
+	offset += sizeof(struct dot1X_header);
+	if(h.len < offset + end_be16toh(d1x->len))
+		return 0;
+	struct eapolkey *eap = (void*) data + offset;
+	assert(end_be16toh(d1x->len) == end_be16toh(eap->paylen) + sizeof(struct eapolkey));
+	return process_eapol_packet(d1x->version, eap);
 }
 
 #include <net/if.h>
@@ -637,6 +865,33 @@ static int usage(const char* argv0)
 	return 1;
 }
 
+static void advance_state()
+{
+	switch(gstate.conn_state) {
+		case ST_CLEAN:
+			gstate.conn_state = ST_GOT_BEACON;
+			deauthenticate(gstate.bssid);
+			authenticate(gstate.bssid);
+			break;
+		case ST_GOT_BEACON:
+			gstate.conn_state = ST_GOT_AUTH;
+			associate(gstate.bssid, gstate.essid);
+			break;
+		case ST_GOT_AUTH:
+			gstate.conn_state = ST_GOT_ASSOC;
+			dprintf(2, "YEAH!\n");
+			break;
+		case ST_GOT_ASSOC:
+			gstate.conn_state = ST_GOT_M1;
+			send_m2();
+			break;
+		case ST_GOT_M1:
+			gstate.conn_state = ST_GOT_M3;
+			//send_m4();
+			break;
+	}
+}
+
 int main(int argc, char** argv)
 {
 	int c;
@@ -673,31 +928,22 @@ int main(int argc, char** argv)
 
 	int exit_state = 1;
 
+fresh_try:
+
 	for(;;) {
 		int ret = process_packet(gstate.cap);
 		if(ret == -1) break;
 		if(ret == 1) {
-			switch(gstate.conn_state) {
-				case ST_CLEAN:
-					gstate.conn_state = ST_GOT_BEACON;
-					deauthenticate(gstate.bssid);
-					authenticate(gstate.bssid);
-					break;
-				case ST_GOT_BEACON:
-					gstate.conn_state = ST_GOT_AUTH;
-					associate(gstate.bssid, gstate.essid);
-					break;
-				case ST_GOT_AUTH:
-					gstate.conn_state = ST_GOT_ASSOC;
-					dprintf(2, "YEAH!\n");
-					return 0;
-					;
-					break;
-
-			}
-
+			stop_timer();
+			advance_state();
 		}
-
+		if(timeout_hit) {
+			if(gstate.conn_state > ST_GOT_BEACON) {
+				gstate.conn_state = ST_GOT_BEACON;
+				advance_state();
+			}
+			goto fresh_try;
+		}
 	}
 
 	return exit_state;
