@@ -888,10 +888,27 @@ static int usage(const char* argv0)
 	return 1;
 }
 
+static int show_enc(void)
+{
+	static const char enc_str[][10] = {
+		[0] = "WPA1 TKIP",
+		[1] = "WPA2 TKIP",
+		[2] = "WPA1 CCMP",
+		[3] = "WPA2 CCMP",
+	};
+	dprintf(2, "[+] chosen encryption: %s\n",
+			enc_str[
+				(!!(gstate.enctype & ET_WPA2)) |
+				((!!(gstate.enctype & ET_PAIR_CCMP)) << 1)] );
+	return 1;
+}
+
 static void advance_state()
 {
+	static int enc_shown = 0;
 	switch(gstate.conn_state) {
 		case ST_CLEAN:
+			if(!enc_shown) enc_shown = show_enc();
 			gstate.conn_state = ST_GOT_BEACON;
 			deauthenticate(gstate.bssid);
 			authenticate(gstate.bssid);
