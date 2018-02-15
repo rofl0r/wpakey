@@ -646,7 +646,10 @@ static void send_m2(void)
 	struct eapolkey *eap = (void*)(packet+offset);
 	eap->type = gstate.eap_key_type;
 	eap->keyinfo = end_htobe16(KI_MIC | KI_PAIRWISE | gstate.eap_mic_cipher);
-	eap->keylen =  0; //end_htobe16(16); //0;
+	if(gstate.enctype & ET_WPA2)
+		eap->keylen =  0;
+	else
+		eap->keylen = end_htobe16(16);
 	memcpy(eap->replay, gstate.replay, 8);
 	memcpy(eap->nonce, gstate.snonce, sizeof(gstate.snonce));
 	memset(eap->iv, 0, sizeof(eap->iv));
@@ -665,7 +668,7 @@ static void send_m2(void)
 }
 
 #define M1_MASK_BITS (KI_PAIRWISE|KI_ACK)
-#define M3_MASK_BITS (KI_INSTALL|KI_MIC|KI_SECURE)
+#define M3_MASK_BITS (KI_INSTALL|KI_MIC)
 static int is_m1(struct eapolkey* eap)
 {
 	unsigned ki = end_be16toh(eap->keyinfo);
