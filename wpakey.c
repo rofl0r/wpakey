@@ -695,7 +695,7 @@ static int process_eapol_packet(int version, struct eapolkey* eap)
 		gstate.eap_mic_cipher = end_be16toh(eap->keyinfo) & KI_TYPEMASK;
 		memcpy(gstate.anonce, eap->nonce, sizeof(gstate.anonce));
 		memcpy(gstate.replay, eap->replay, sizeof(gstate.replay));
-		gstate.m1_count = 0;
+		gstate.m1_count = 1;
 		return 1;
 	} else if(gstate.conn_state == ST_GOT_M1 && is_m3(eap) ) {
 		return 1;
@@ -1013,7 +1013,7 @@ fresh_try:
 			}
 		}
 		if(timeout_hit) {
-			if(gstate.conn_state == ST_GOT_M1 && gstate.m1_count > 1) {
+			if(gstate.conn_state == ST_GOT_M1 && gstate.m1_count > 0) {
 				dprintf(2, "[X] no M3 received, assuming password %s is wrong\n", gstate.pass);
 				if(!fetch_next_pass())
 					break;
