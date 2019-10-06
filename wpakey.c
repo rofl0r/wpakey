@@ -69,6 +69,7 @@ struct global {
 	unsigned char kek[16]; /* key encryption key, for AES unwrapping */
 	unsigned char ptk[16]; /* pairwise key (just TK in 802.11 terms) */
 	unsigned char rsn_caps[2];
+	unsigned char fatal_timeout;
 	unsigned timeout_secs;
 };
 
@@ -884,10 +885,15 @@ static void str2mac(const char *str, unsigned char *mac)
 
 static int usage(const char* argv0)
 {
-	dprintf(2, "usage: %s -i wlan0 -e essid -b bssid -t timeout\n\n"
+	dprintf(2, "usage: %s -i wlan0 -e essid -b bssid [-t timeout -f]\n\n"
 		   "reads password candidates from stdin and tries to connect\n"
 		   "the wifi apapter needs to be on the right channel already\n"
 		   "password candidates with length > 64 and < 8 will be ignored\n"
+		   "\n"
+		   "-t <timeout> : specify timeout in seconds\n"
+		   "-f           : hitting timeout is fatal\n"
+		   "               prevents endless loops on bad conns\n"
+		   "               use when testing only a single password\n"
 		   , argv0 );
 	return 1;
 }
@@ -967,7 +973,7 @@ int main(int argc, char** argv)
 	TIMEOUT_SECS = 2;
 	int c;
 	const char *essid = 0, *bssid = 0, *itf = 0;
-	while((c = getopt(argc, argv, "b:e:i:t:")) != -1) {
+	while((c = getopt(argc, argv, "b:e:i:t:f")) != -1) {
 		switch(c) {
 			case 'i':
 				itf = optarg;
@@ -980,6 +986,9 @@ int main(int argc, char** argv)
 				break;
 			case 't':
 				TIMEOUT_SECS = atoi(optarg);
+				break;
+			case 'f':
+				gstate.fatal_timeout = 1;
 				break;
 			default:
 				return usage(argv[0]);
@@ -1018,6 +1027,7 @@ fresh_try:
 				if(!fetch_next_pass())
 					break;
 			}
+			if(gstate.fatal_timeout) return 1;
 			gstate.conn_state = ST_CLEAN;
 			advance_state();
 			goto fresh_try;
