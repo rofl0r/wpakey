@@ -19,7 +19,9 @@ password candidates with length > 64 and < 8 will be ignored.
 note that some access points (most notably *hostapd*) insist on getting ACK
 responses on every single unicast packet. due to tight timeout constraints,
 it is not possible to generate this ACK in due time in software, so the AP will
-not send EAPOL packet M1 after the association response.
+not send EAPOL packet M1 after the association response, or if it sends it, will
+not accept our M2 packet without an ACK for M1, which makes it impossible to
+distinguish whether the password is correct, or the router bitchy.
 
 the only fix for this issue is the so-called "active monitor" mode.
 currently, this feature can only be activated on *ath9k* and *mt7601u* drivers
@@ -29,6 +31,13 @@ tell you whether the feature is implemented, it will print
 note that even though this feature cannot be actively activated on *ath9k_htc*
 devices, some or all of them have this behaviour turned on by default, so
 it may well be that other devices behave the same.
+
+therefore, it is highly recommend to use an adapter with one of the mentioned
+chipsets for a reliable result.
+
+on the bright side, if we can get the targetted AP to send M1 (regardless of
+whether the password we send during M2 is correct), we can retrieve
+its PMKID (if it sends one) and crack it with john the ripper instead.
 
 ## RETURN VALUE
 
