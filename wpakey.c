@@ -252,8 +252,8 @@ static void authenticate(const unsigned char dst[6])
 	unsigned char packet[ sizeof (struct wifi_header) + 6];
 	init_header(packet, 0x00B0, dst);
 	memcpy(packet + sizeof (struct wifi_header), "\0\0" /*algorithm*/ "\1\0" /*seq*/ "\0\0" /*status*/, 6);
-	send_packet(packet, sizeof packet, 1);
 	dprintf(2, "[+] Sending authentication request\n");
+	send_packet(packet, sizeof packet, 1);
 }
 
 static size_t add_encryption_ie(unsigned char *packet)
@@ -389,9 +389,9 @@ static void associate(const unsigned char dst[6], const char *essid)
 
 	offset += add_encryption_ie(packet + offset);
 
+	dprintf(2, "[+] Sending association request\n");
 	/* omit wps tag for now */
 	send_packet(packet, offset, 1);
-	dprintf(2, "[+] Sending association request\n");
 }
 
 
@@ -666,6 +666,7 @@ static void send_m2(void)
 	d1x->len = end_htobe16(sizeof(struct eapolkey) + ielen);
 
 	make_mic(eap->mic, gstate.kck, (void*) d1x, sizeof (struct dot1X_header) + sizeof(struct eapolkey) + ielen);
+	dprintf(2, "[+] Sending M2 message\n");
 	send_packet(packet, offset, 1);
 }
 
