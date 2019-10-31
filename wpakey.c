@@ -48,6 +48,7 @@ struct global {
 	unsigned char our_mac[6];
 	unsigned char bssid[6];
 	char essid[32+1];
+	char essid_set;
 	char conn_state;
 	char pass[64+1];
 	uint8_t m1_count;
@@ -463,6 +464,14 @@ enum state {
 	ST_GOT_M3,
 };
 
+static void set_essid(unsigned char *buf, size_t len, int msg) {
+	if(len+1 > sizeof(gstate.essid)) return;
+	memcpy(gstate.essid, buf, len);
+	gstate.essid[len] = 0;
+	gstate.essid_set = 1;
+	if(msg) dprintf(2, "[+] setting essid to '%s'\n", gstate.essid);
+}
+
 static void fix_rates(unsigned char *buf, size_t len) {
 	unsigned i;
 	for(i = 0; i < len; i++)
@@ -566,6 +575,9 @@ static void process_tags(const unsigned char* tagdata, size_t tagdata_len)
 				/* only process WPA1 if WPA2 RSN element not encountered */
 				if(!enc && tag[1] >= 8 && !memcmp(tag+2, "\x00\x50\xF2\x01\x01\x00", 6))
 					enc |= ET_WPA | process_rsn(tag+8, tag[1]-6, 1);
+				break;
+			case 0x00: /* essid */
+				if(!gstate.essid_set) set_essid(tag+2, tag[1], 1);
 				break;
 			case 0x01: /* rates */
 				dlen = &gstate.len_rates;
@@ -766,10 +778,8 @@ static int process_packet(pcap_t *cap)
 
 	if(gstate.conn_state < ST_GOT_BEACON && framectl == 0x0080 /* beacon */)
 	{
-		/* TODO : retrieve essid from tagged data */
-
 		/* check if we already have enuff */
-		if(gstate.len_rates && gstate.len_htcaps)
+		if(gstate.essid_set && gstate.len_rates && gstate.len_htcaps)
 			return 0;
 
 		offset +=
@@ -897,7 +907,7 @@ static void str2mac(const char *str, unsigned char *mac)
 
 static int usage(const char* argv0)
 {
-	dprintf(2, "usage: %s -i wlan0 -e essid -b bssid [-t timeout -f]\n\n"
+	dprintf(2, "usage: %s -i wlan0 -b bssid [-e essid -t timeout -f]\n\n"
 		   "reads password candidates from stdin and tries to connect\n"
 		   "the wifi apapter needs to be on the right channel already\n"
 		   "password candidates with length > 64 and < 8 will be ignored\n"
@@ -1006,12 +1016,13 @@ int main(int argc, char** argv)
 				return usage(argv[0]);
 		}
 	}
-	if(!essid || !bssid || !itf) return usage(argv[0]);
+	if(!bssid || !itf) return usage(argv[0]);
+	if(!essid) gstate.essid_set = 0;
+	else set_essid(essid, strlen(essid), 0);
 
 	get_mac(itf, gstate.our_mac);
 	gstate.cap = capture_init(itf);
 	assert(gstate.cap);
-	strcpy(gstate.essid, essid);
 	str2mac(bssid, gstate.bssid);
 
 	if(!fetch_next_pass()) return usage(argv[0]);
