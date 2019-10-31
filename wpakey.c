@@ -75,6 +75,13 @@ struct global {
 
 static struct global gstate;
 
+#ifdef DEBUG
+#include "dump.c"
+#define DUMP(MSG, BUF, LEN) do { dprintf(2, "%s\n", MSG); dump(BUF, LEN); } while(0)
+#else
+#define DUMP(MSG, BUF, LEN) do {} while(0)
+#endif
+
 /* packet send stuff START */
 #define TIMEOUT_SECS gstate.timeout_secs
 #define RESEND_TIMEOUT_USECS (1000000LL/5LL)
@@ -696,7 +703,9 @@ static int process_eapol_packet(int version, struct eapolkey* eap)
 		gstate.eap_version = version;
 		gstate.eap_mic_cipher = end_be16toh(eap->keyinfo) & KI_TYPEMASK;
 		memcpy(gstate.anonce, eap->nonce, sizeof(gstate.anonce));
+		DUMP("anonce", gstate.anonce, sizeof(gstate.anonce));
 		memcpy(gstate.replay, eap->replay, sizeof(gstate.replay));
+		DUMP("replay", gstate.replay, sizeof(gstate.replay));
 		gstate.m1_count = 1;
 		return 1;
 	} else if(gstate.conn_state == ST_GOT_M1 && is_m3(eap) ) {
