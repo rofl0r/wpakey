@@ -25,6 +25,7 @@ enum enctype {
 	ET_AKM_8021X   = 1 << 11,
 	ET_AKM_PSK     = 1 << 12,
 	ET_AKM_8021XFT = 1 << 13,
+	ET_AKM_FT_PSK  = 1 << 14,
 };
 
 #define KI_TYPEMASK 0x0007
@@ -498,12 +499,13 @@ static int check_rsn_authkey(const unsigned char rsn[4], int wpa)
 		[1] = ET_AKM_8021X,
 		[2] = ET_AKM_PSK,
 		[3] = ET_AKM_8021XFT,
+		[4] = ET_AKM_FT_PSK,
 	};
 	if(wpa == 2)
 		assert(!memcmp(rsn, "\0\x0f\xac", 3));
 	else if(wpa == 1)
 		assert(!memcmp(rsn, "\0\x50\xf2", 3));
-	assert(rsn[3] < 4);
+	assert(rsn[3] < (sizeof auth_key_mgmt/sizeof(auth_key_mgmt[0])));
 	return auth_key_mgmt[rsn[3]];
 }
 static int process_rsn(const unsigned char *rsn, int len, int wpa) {
