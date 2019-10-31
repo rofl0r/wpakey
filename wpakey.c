@@ -954,7 +954,6 @@ static void advance_state()
 	static int enc_shown = 0;
 	switch(gstate.conn_state) {
 		case ST_CLEAN:
-			check_supported_enc();
 			if(!enc_shown) enc_shown = show_enc();
 			gstate.conn_state = ST_GOT_BEACON;
 			deauthenticate(gstate.bssid);
@@ -969,6 +968,7 @@ static void advance_state()
 			break;
 		case ST_GOT_ASSOC:
 			gstate.conn_state = ST_GOT_M1;
+			check_supported_enc();
 			send_m2();
 			break;
 		case ST_GOT_M1:
