@@ -6,7 +6,7 @@ wpakey - monitor mode WPA1/WPA2 online password bruteforcer
 
 ## SYNOPSIS
 
-    cat password.lst | wpakey -i wlan0 -e essid -b bssid -t timeout
+    cat password.lst | wpakey -i wlan0 -b bssid -t timeout -a -f
 
 ## DESCRIPTION
 

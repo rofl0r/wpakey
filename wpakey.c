@@ -50,6 +50,7 @@ struct global {
 	char essid[32+1];
 	char essid_set;
 	char conn_state;
+	char assoc_only;
 	char pass[64+1];
 	uint8_t m1_count;
 	unsigned char rates[64];
@@ -907,12 +908,13 @@ static void str2mac(const char *str, unsigned char *mac)
 
 static int usage(const char* argv0)
 {
-	dprintf(2, "usage: %s -i wlan0 -b bssid [-e essid -t timeout -f]\n\n"
+	dprintf(2, "usage: %s -i wlan0 -b bssid [-e essid -t timeout -f -a]\n\n"
 		   "reads password candidates from stdin and tries to connect\n"
 		   "the wifi apapter needs to be on the right channel already\n"
 		   "password candidates with length > 64 and < 8 will be ignored\n"
 		   "\n"
 		   "-t <timeout> : specify timeout in seconds\n"
+		   "-a           : stop after association (retrieve only PMKID)\n"
 		   "-f           : hitting timeout is fatal\n"
 		   "               prevents endless loops on bad conns\n"
 		   "               use when testing only a single password\n"
@@ -967,6 +969,7 @@ static void advance_state()
 			gstate.conn_state = ST_GOT_ASSOC;
 			break;
 		case ST_GOT_ASSOC:
+			if(gstate.assoc_only) exit(0);
 			gstate.conn_state = ST_GOT_M1;
 			check_supported_enc();
 			send_m2();
@@ -995,7 +998,7 @@ int main(int argc, char** argv)
 	TIMEOUT_SECS = 2;
 	int c;
 	const char *essid = 0, *bssid = 0, *itf = 0;
-	while((c = getopt(argc, argv, "b:e:i:t:f")) != -1) {
+	while((c = getopt(argc, argv, "b:e:i:t:fa")) != -1) {
 		switch(c) {
 			case 'i':
 				itf = optarg;
@@ -1008,6 +1011,9 @@ int main(int argc, char** argv)
 				break;
 			case 't':
 				TIMEOUT_SECS = atoi(optarg);
+				break;
+			case 'a':
+				gstate.assoc_only = 1;
 				break;
 			case 'f':
 				gstate.fatal_timeout = 1;
